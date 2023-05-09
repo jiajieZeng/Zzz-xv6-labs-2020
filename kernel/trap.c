@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -67,8 +68,23 @@ usertrap(void)
     syscall();
   } else if((which_dev = devintr()) != 0){
     // ok
-    
-    
+  } else if (r_scause() == 13 || r_scause() == 15) {
+    uint64 va0 = r_stval();
+    if (va0 < p->trapframe->sp || va0 >= p->sz) {
+        p->killed =1;
+    } else {    
+        char *mem = kalloc();
+        if (mem == 0) {
+            p->killed = 1;
+        } else {
+            uint64 st = PGROUNDDOWN(va0);
+            memset(mem, 0, PGSIZE);
+            if (mappages(p->pagetable, st, PGSIZE, (uint64)mem, PTE_X | PTE_W | PTE_R | PTE_U) != 0) {
+                kfree(mem);
+                p->killed = 1;
+            }
+        }
+    }
   } else {
     printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
     printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
@@ -79,54 +95,9 @@ usertrap(void)
     exit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  // not in handler
-  // if (which_dev == 2) {
-  //   yield();
-  // }
-  if(which_dev == 2) {
-        if (p->interval != 0) {
-            --p->ticks;
-            if (p->ticks <= 0 && p->handler == 0) {
-                    p->handler = 1;
-                    //中断返回的时候调用handler
-                    p->ticks = p->interval;
-                    p->epc = p->trapframe->epc;
-                    p->ra = p->trapframe->ra;
-                    p->sp = p->trapframe->sp;
-                    p->gp = p->trapframe->gp;
-                    p->tp = p->trapframe->tp;
-                    p->t0 = p->trapframe->t0;
-                    p->t1 = p->trapframe->t1;
-                    p->t2 = p->trapframe->t2;
-                    p->s0 = p->trapframe->s0;
-                    p->s1 = p->trapframe->s1;
-                    p->a0 = p->trapframe->a0;
-                    p->a1 = p->trapframe->a1;
-                    p->a2 = p->trapframe->a2;
-                    p->a3 = p->trapframe->a3;
-                    p->a4 = p->trapframe->a4;
-                    p->a5 = p->trapframe->a5;
-                    p->a6 = p->trapframe->a6;
-                    p->a7 = p->trapframe->a7;
-                    p->s2 = p->trapframe->s2;
-                    p->s3 = p->trapframe->s3;
-                    p->s4 = p->trapframe->s4;
-                    p->s5 = p->trapframe->s5;
-                    p->s6 = p->trapframe->s6;
-                    p->s7 = p->trapframe->s7;
-                    p->s8 = p->trapframe->s8;
-                    p->s9 = p->trapframe->s9;
-                    p->s10 = p->trapframe->s10;
-                    p->s11 = p->trapframe->s11;
-                    p->t3 = p->trapframe->t3;
-                    p->t4 = p->trapframe->t4;
-                    p->t5 = p->trapframe->t5;
-                    p->t6 = p->trapframe->t6;
-                    p->trapframe->epc = (uint64)(p->t_handler);
-            }
-        }
-        yield();
-  }
+  if(which_dev == 2)
+    yield();
+
   usertrapret();
 }
 
@@ -265,48 +236,3 @@ devintr()
   }
 }
 
-int sigalarm(int ticks, void(*fn)()) {
-  struct proc *p = myproc();
-  p->interval = ticks;
-  p->ticks = ticks;
-  p->t_handler = fn;
-  return 0;
-}
-
-int sigreturn() {
-  struct proc *p = myproc();
-  p->trapframe->epc = p->epc;
-  p->trapframe->ra = p->ra;
-  p->trapframe->sp = p->sp;
-  p->trapframe->gp = p->gp;
-  p->trapframe->tp = p->tp;
-  p->trapframe->t0 = p->t0;
-  p->trapframe->t1 = p->t1;
-  p->trapframe->t2 = p->t2;
-  p->trapframe->s0 = p->s0;
-  p->trapframe->s1 = p->s1;
-  p->trapframe->a0 = p->a0;
-  p->trapframe->a1 = p->a1;
-  p->trapframe->a2 = p->a2;
-  p->trapframe->a3 = p->a3;
-  p->trapframe->a4 = p->a4;
-  p->trapframe->a5 = p->a5;
-  p->trapframe->a6 = p->a6;
-  p->trapframe->a7 = p->a7;
-  p->trapframe->s2 = p->s2;
-  p->trapframe->s3 = p->s3;
-  p->trapframe->s4 = p->s4;
-  p->trapframe->s5 = p->s5;
-  p->trapframe->s6 = p->s6;
-  p->trapframe->s7 = p->s7;
-  p->trapframe->s8 = p->s8;
-  p->trapframe->s9 = p->s9;
-  p->trapframe->s10 = p->s10;
-  p->trapframe->s11 = p->s11;
-  p->trapframe->t3 = p->t3;
-  p->trapframe->t4 = p->t4;
-  p->trapframe->t5 = p->t5;
-  p->trapframe->t6 = p->t6;
-  p->handler = 0;
-  return 0;
-}
