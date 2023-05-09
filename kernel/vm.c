@@ -47,39 +47,6 @@ kvminit()
   kvmmap(TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
 }
 
-//add
-pagetable_t
-proc_kvminit() {
-  pagetable_t kpagetable = uvmcreate();
-  if( kpagetable == 0) {
-    return 0;
-  }
-  memset(kpagetable, 0, PGSIZE);
-
-  // uart registers
-  proc_kvmmap(kpagetable, UART0, UART0, PGSIZE, PTE_R | PTE_W);
-
-  // virtio mmio disk interface
-  proc_kvmmap(kpagetable, VIRTIO0, VIRTIO0, PGSIZE, PTE_R | PTE_W);
-
-  // CLINT
-  proc_kvmmap(kpagetable, CLINT, CLINT, 0x10000, PTE_R | PTE_W);
-
-  // PLIC
-  proc_kvmmap(kpagetable, PLIC, PLIC, 0x400000, PTE_R | PTE_W);
-
-  // map kernel text executable and read-only.
-  proc_kvmmap(kpagetable, KERNBASE, KERNBASE, (uint64)etext-KERNBASE, PTE_R | PTE_X);
-
-  // map kernel data and the physical RAM we'll make use of.
-  proc_kvmmap(kpagetable, (uint64)etext, (uint64)etext, PHYSTOP-(uint64)etext, PTE_R | PTE_W);
-
-  // map the trampoline for trap entry/exit to
-  // the highest virtual address in the kernel.
-  proc_kvmmap(kpagetable, TRAMPOLINE, (uint64)trampoline, PGSIZE, PTE_R | PTE_X);
-  return kpagetable;
-}
-
 // Switch h/w page table register to the kernel's page table,
 // and enable paging.
 void
@@ -154,25 +121,18 @@ kvmmap(uint64 va, uint64 pa, uint64 sz, int perm)
     panic("kvmmap");
 }
 
-//added
-void proc_kvmmap(pagetable_t pagetable, uint64 va, uint64 pa, uint64 sz, int perm) {
-    if (mappages(pagetable, va, sz, pa, perm) != 0) {
-        panic("proc_kvmmap");
-    }
-}
-
 // translate a kernel virtual address to
 // a physical address. only needed for
 // addresses on the stack.
 // assumes va is page aligned.
 uint64
-kvmpa(pagetable_t pagetable, uint64 va)
+kvmpa(uint64 va)
 {
   uint64 off = va % PGSIZE;
   pte_t *pte;
   uint64 pa;
   
-  pte = walk(pagetable, va, 0);
+  pte = walk(kernel_pagetable, va, 0);
   if(pte == 0)
     panic("kvmpa");
   if((*pte & PTE_V) == 0)
@@ -309,27 +269,6 @@ uvmdealloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
   return newsz;
 }
 
-static char *dots[] = {"..", ".. ..", ".. .. .."};
-
-//add
-void vmprint(pagetable_t pagetable) {
-   printf("page table %p\n", pagetable);
-   rec_vmprint(pagetable, 0);
-}
-
-void rec_vmprint(pagetable_t pagetable, int deep) {
-    if (deep > 2) return;
-    for (int i = 0; i < 512; i++) {
-        pte_t pte = pagetable[i];
-        if((pte & PTE_V)){
-            // this PTE points to a lower-level page table.
-            uint64 child = PTE2PA(pte);
-            printf("%s%d: pte %p pa %p\n", dots[deep], i, pte, child);
-            rec_vmprint((pagetable_t)child, deep + 1);
-        }
-    }
-}
-
 // Recursively free page-table pages.
 // All leaf mappings must already have been removed.
 void
@@ -348,21 +287,6 @@ freewalk(pagetable_t pagetable)
     }
   }
   kfree((void*)pagetable);
-}
-
-//add
-void proc_freekernelpagetable(pagetable_t pagetable) {
-    for (int i = 0; i < 512; i++) {
-        pte_t pte = pagetable[i];
-        if (pte & PTE_V) {
-            pagetable[i] = 0;
-            if ((pte & (PTE_R | PTE_W | PTE_X)) == 0) {
-                uint64 child = PTE2PA(pte);
-                proc_freekernelpagetable((pagetable_t)child);
-            }
-        }
-    }
-    kfree((void*)pagetable);
 }
 
 // Free user memory pages,
@@ -449,35 +373,13 @@ copyout(pagetable_t pagetable, uint64 dstva, char *src, uint64 len)
   return 0;
 }
 
-//vmcopypagetable 将进程中的用户页表复制到内核页表
-void vmcopypagetable(pagetable_t pagetable, pagetable_t kpagetable, uint64 srcva, uint64 len) {
-    if (srcva + len >= PLIC) {
-        panic("vmcopypagetable: too large newsz");
-    }
-    for (uint64 i = srcva; i < srcva + len; i += PGSIZE) {
-        pte_t *pte = walk(pagetable, i, 0);
-        if (pte == 0) {
-            panic("no such user pte");
-        }
-        if ((*pte & PTE_V) == 0) {
-            panic("pte not valid");
-        }
-        pte_t *kpte = walk(kpagetable, i, 1);
-        if (kpte == 0) {
-            panic("no such kernel pte");
-        }
-        //复制并且关闭读写权限，用户权限
-        *kpte = (*pte & ~(PTE_W | PTE_U | PTE_X));
-    }
-}
-
 // Copy from user to kernel.
 // Copy len bytes to dst from virtual address srcva in a given page table.
 // Return 0 on success, -1 on error.
 int
 copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 {
-/*  uint64 n, va0, pa0;
+  uint64 n, va0, pa0;
 
   while(len > 0){
     va0 = PGROUNDDOWN(srcva);
@@ -494,8 +396,6 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
     srcva = va0 + PGSIZE;
   }
   return 0;
-*/
-  return copyin_new(pagetable, dst, srcva, len);
 }
 
 // Copy a null-terminated string from user to kernel.
@@ -505,7 +405,7 @@ copyin(pagetable_t pagetable, char *dst, uint64 srcva, uint64 len)
 int
 copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
 {
-/*  uint64 n, va0, pa0;
+  uint64 n, va0, pa0;
   int got_null = 0;
 
   while(got_null == 0 && max > 0){
@@ -539,6 +439,4 @@ copyinstr(pagetable_t pagetable, char *dst, uint64 srcva, uint64 max)
   } else {
     return -1;
   }
-*/
-  return copyinstr_new(pagetable, dst, srcva, max);
 }

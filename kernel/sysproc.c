@@ -49,13 +49,6 @@ sys_sbrk(void)
   addr = myproc()->sz;
   if(growproc(n) < 0)
     return -1;
-  if (n > 0) {
-    vmcopypagetable(myproc()->pagetable, myproc()->kernel_pagetable, addr, n);
-  } else {
-    for (int j = addr - PGSIZE; j >= addr + n; j -= PGSIZE) {
-        uvmunmap(myproc()->kernel_pagetable, j, 1, 0);
-    }
-  }
   return addr;
 }
 
@@ -76,6 +69,7 @@ sys_sleep(void)
     }
     sleep(&ticks, &tickslock);
   }
+  backtrace();
   release(&tickslock);
   return 0;
 }
@@ -101,4 +95,21 @@ sys_uptime(void)
   xticks = ticks;
   release(&tickslock);
   return xticks;
+}
+
+uint64 sys_sigalarm(void) {
+    int n;
+    uint64 x;
+    if (argint(0, &n) < 0) {
+        return -1;
+    }
+    if (argaddr(1, &x) < 0) {
+        return -1;
+    }
+    sigalarm(n, (void(*)())(x));
+    return 0;
+}
+
+uint64 sys_sigreturn(void) {
+    return sigreturn();
 }
