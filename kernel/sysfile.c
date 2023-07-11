@@ -52,6 +52,7 @@ fdalloc(struct file *f)
   return -1;
 }
 
+
 uint64
 sys_dup(void)
 {
@@ -73,7 +74,7 @@ sys_read(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
+  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0) 
     return -1;
   return fileread(f, p, n);
 }
@@ -284,6 +285,30 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
+sys_symlink(void) {
+    struct inode *ip;
+    char path[MAXPATH], target[MAXPATH];
+    int pathlen;
+    if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) {
+        return -1;
+    }
+    begin_op();
+    if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+        end_op();
+        return -1;
+    }
+    pathlen = strlen(target);
+    if ((writei(ip, 0, (uint64)target, 0, pathlen) < 0)) {
+        end_op();
+        return -1;
+    }  
+    iunlockput(ip);
+    end_op();
+    return 0;
+
+}
+
+uint64
 sys_open(void)
 {
   char path[MAXPATH];
@@ -304,11 +329,40 @@ sys_open(void)
       return -1;
     }
   } else {
-    if((ip = namei(path)) == 0){
-      end_op();
-      return -1;
+    // if((ip = namei(path)) == 0){
+    //   end_op();
+    //   return -1;
+    // }
+    // ilock(ip);
+    
+    int depth = 0;
+    for ( ; ; ) {
+        if ((ip = namei(path)) == 0) {  // get inode
+            end_op();           
+            return -1;
+        }
+        ilock(ip);      // lock
+        if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {    //T_SYMLINK and FOLLOW
+            // You may approximate this by returning an error code if the depth of links reaches some threshold (e.g., 10).
+            if (++depth > 10) {
+                iunlockput(ip);     // drop
+                end_op();
+                return -1;
+            }
+            if (readi(ip, 0, (uint64)path, 0, MAXPATH) < 0) {
+                iunlockput(ip);     //drop
+                end_op();
+                return -1;
+            }
+            iunlockput(ip);
+        } else {
+            // NO_FOLLOW OR NOT T_SYMLINK
+            break;
+        }
     }
-    ilock(ip);
+
+    //do.....
+    
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();
