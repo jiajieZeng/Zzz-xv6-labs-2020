@@ -210,6 +210,7 @@ fileuvmunmap(pagetable_t pagetable, uint64 va, uint64 bytes, struct vma* vma)
        uvmunmap(pagetable, i, 1, 1);
        *pte = 0;
     }
+    memset(vma, 0, sizeof(struct vma));
     return 1;
 }
 
