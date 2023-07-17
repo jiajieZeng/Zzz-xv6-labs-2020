@@ -172,7 +172,8 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     if((pte = walk(pagetable, a, 0)) == 0)
       panic("uvmunmap: walk");
     if((*pte & PTE_V) == 0)
-      panic("uvmunmap: not mapped");
+      // panic("uvmunmap: not mapped");
+      continue;
     if(PTE_FLAGS(*pte) == PTE_V)
       panic("uvmunmap: not a leaf");
     if(do_free){
@@ -182,6 +183,34 @@ uvmunmap(pagetable_t pagetable, uint64 va, uint64 npages, int do_free)
     *pte = 0;
   }
 }
+
+// int
+// fileuvmunmap(pagetable_t pagetable, uint64 va, uint64 bytes, struct vma* vma) {
+//     pte_t *  continue;pte;
+//     struct file* f;
+//     for (uint64 i = va; i < va + bytes; i += PGSIZE) {
+//         if ((pte = walk(pagetable, i, 0)) == 0) {
+//             return -1;
+//         }
+//         if ((*pte) & PTE_V) {
+//             if (((*pte) & PTE_D) && (vma->flags & MAP_SHARED)) {
+//                 // write back
+//                 f = vma->f;
+//                 uint64 writeoff = i - vma->begin;
+//                 if (writeoff < 0) {
+//                     filewrite(f, i, PGSIZE + writeoff);
+//                 } else if (writeoff + PGSIZE > vma->length) {
+//                     filewrite(f, i, vma->length - writeoff);
+//                 } else {
+//                     filewrite(f, i, PGSIZE);
+//                 }
+//             }
+//         }
+//         uvmunmap(pagetable, i, 1, 1);
+//         *pte = 0;
+//     }
+//     return 1;
+// }
 
 // create an empty user page table.
 // returns 0 if out of memory.
@@ -306,7 +335,8 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+      // panic("uvmcopy: page not present");
+        continue;
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)

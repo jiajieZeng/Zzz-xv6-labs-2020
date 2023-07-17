@@ -15,6 +15,7 @@
 #include "sleeplock.h"
 #include "file.h"
 #include "fcntl.h"
+#include "memlayout.h"
 
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
@@ -52,7 +53,6 @@ fdalloc(struct file *f)
   return -1;
 }
 
-
 uint64
 sys_dup(void)
 {
@@ -74,9 +74,191 @@ sys_read(void)
   int n;
   uint64 p;
 
-  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0) 
+  if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
   return fileread(f, p, n);
+}
+
+
+int                                                                                             
+lazyallocation(uint64 va)
+{   
+    struct proc *p = myproc();
+    struct vma *vma;
+    struct file *fptr;
+    struct inode *iptr;
+    int found = 0;
+    char *mem; 
+    for (int i = 0; i < NVMA; i++) {
+       vma = &p->vmaslot[i];
+       // printf("%d-->begin:%d, length:%d, prot:%d, flags:%d, offset:%d, mapped:%d\n",i, vma->begin, vma->length, vma->prot, vma->flags, vma->offset, vma->mapped); 
+       if (vma->mapped && va >= vma->begin && va < vma->begin + vma->length) {
+          found = 1;
+          break;
+       }
+    }
+    if (found == 0) {
+       return -1;
+    }
+    if ((mem = kalloc()) == 0) {
+       return -1;
+    }   
+    memset(mem, 0, PGSIZE);
+    
+    //atomic
+    begin_op();
+    fptr = (struct file*)vma->f;
+    iptr = (struct inode*)fptr->ip;
+    ilock(iptr);
+    uint offset = vma->offset + PGROUNDDOWN(va - vma->begin);
+    readi(iptr, 0, (uint64)mem, offset , PGSIZE);
+    iunlock(iptr);
+    end_op();
+    int pteflag = PTE_U;
+    if (vma->prot & PROT_READ) {
+       pteflag |= PTE_R;
+    }
+    if (vma->prot & PROT_WRITE) {
+        pteflag |= PTE_W;
+    }
+    if (vma->prot & PROT_EXEC) {
+        pteflag |= PTE_X;
+    }
+    if (mappages(p->pagetable, va, PGSIZE, (uint64)mem, pteflag) != 0) {
+       kfree(mem);
+       return -1;
+    }
+    return 0;
+}
+
+
+uint64
+sys_mmap(void)
+{
+    uint64 length, offset, top;
+    int prot, flags, fd;
+    struct file *f;
+    struct proc *p;
+    struct vma *vma = 0, *tvma;
+    if (argaddr(1, &length) < 0 || argint(2, &prot) < 0 || argint(3, &flags) < 0 ||
+            argfd(4, &fd, &f) < 0 || argaddr(5, &offset) < 0) {
+        return -1;
+    }
+    if (length == 0) {
+        return -1;
+    }
+    if ((f->readable == 0 && (prot & (PROT_READ))) || (f->writable == 0 && (prot & (PROT_WRITE)) && (flags & (MAP_PRIVATE)) == 0)) {
+        return -1;
+    }
+    p = myproc();
+    top = TRAPFRAME;
+    int found = 0;
+    for (int i = 0; i < NVMA; i++) {
+        tvma = &p->vmaslot[i];
+        if (tvma->mapped == 1) {
+            if (tvma->begin < top) {
+                top = tvma->begin;
+                top = PGROUNDDOWN(top);
+            }
+        } else if (tvma->mapped == 0) {
+            if (!found) {
+                found = 1;
+                vma = tvma;
+                vma->mapped = 1;
+            }
+       // printf("%d-->begin:%d, length:%d, prot:%d, flags:%d, offset:%d, mapped:%d\n",i, vma->begin, vma->length, vma->prot, vma->flags, vma->offset, vma->mapped); 
+        }
+    }
+    if (found == 0 && vma == 0) {
+        return -1;
+    }  
+    length = PGROUNDUP(length);
+    vma->begin = top - length;
+    vma->length = length;
+    vma->prot = prot;
+    vma->flags = flags;
+    vma->offset = offset;
+    vma->f = f;
+    filedup(f);
+    
+    return vma->begin;
+}
+
+int
+fileuvmunmap(pagetable_t pagetable, uint64 va, uint64 bytes, struct vma* vma)
+{
+    pte_t *pte;
+    struct file* f;
+    for (uint64 i = va; i < va + bytes; i += PGSIZE) {
+       if ((pte = walk(pagetable, i, 0)) == 0) {
+          return -1;
+       }
+       if ((*pte) & PTE_V) {
+          if (((*pte) & PTE_D) && (vma->flags & MAP_SHARED)) {
+             // write back
+             f = vma->f;
+             uint64 writeoff = i - vma->begin;
+             if (writeoff < 0) {
+                filewrite(f, i, PGSIZE + writeoff);
+             } else if (writeoff + PGSIZE > vma->length) {
+                filewrite(f, i, vma->length - writeoff);
+             } else {
+                filewrite(f, i, PGSIZE);
+             }
+          }
+       }                                                                                        
+       uvmunmap(pagetable, i, 1, 1);
+       *pte = 0;
+    }
+    return 1;
+}
+
+
+uint64
+sys_munmap(void)
+{
+    struct proc *p = myproc();
+    uint64 va, length, tva;
+    struct vma *vma = 0, *tvma;
+    if (argaddr(0, &va) < 0 || argaddr(1, &length) < 0) {
+        return -1;
+    }
+    for (int i = 0; i < NVMA; i++) {
+        tvma = &p->vmaslot[i];
+        if (tvma->mapped && va >= tvma->begin && va < tvma->begin + tvma->length) {
+            vma = tvma;
+            break;
+        }
+    }
+    if (vma == 0) {
+        return -1;
+    }
+    // n munmap call might cover only a portion of an mmap-ed region, but you can assume that it will either unmap at the start, or at the end, or the whole region (but not punch a hole in the middle of a region). 
+    if (va > vma->begin && va + length < vma->begin + vma->length) {
+        return -1;
+    }
+    tva = va;
+    if (va > vma->begin) {
+        tva = PGROUNDDOWN(tva);
+    }
+    int n = length - (tva - va);
+    if (n < 0) {
+        return -1;
+    }
+    if (fileuvmunmap(p->pagetable, tva, (uint64)n, vma) < 0) {
+        return -1;
+    }
+    if (va <= vma->begin && va + length > vma->begin) {
+        uint64 dif = va + length - vma->begin;
+        vma->begin = va + length;
+        vma->offset = vma->offset + dif;
+    }
+    vma->length -= length;
+    if (vma->length <= 0) {
+        fileclose(vma->f);
+        vma->mapped = 0;
+    }
+    return 0;
 }
 
 uint64
@@ -88,6 +270,7 @@ sys_write(void)
 
   if(argfd(0, 0, &f) < 0 || argint(2, &n) < 0 || argaddr(1, &p) < 0)
     return -1;
+
 
   return filewrite(f, p, n);
 }
@@ -285,30 +468,6 @@ create(char *path, short type, short major, short minor)
 }
 
 uint64
-sys_symlink(void) {
-    struct inode *ip;
-    char path[MAXPATH], target[MAXPATH];
-    int pathlen;
-    if (argstr(0, target, MAXPATH) < 0 || argstr(1, path, MAXPATH) < 0) {
-        return -1;
-    }
-    begin_op();
-    if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
-        end_op();
-        return -1;
-    }
-    pathlen = strlen(target);
-    if ((writei(ip, 0, (uint64)target, 0, pathlen) < 0)) {
-        end_op();
-        return -1;
-    }  
-    iunlockput(ip);
-    end_op();
-    return 0;
-
-}
-
-uint64
 sys_open(void)
 {
   char path[MAXPATH];
@@ -329,40 +488,11 @@ sys_open(void)
       return -1;
     }
   } else {
-    // if((ip = namei(path)) == 0){
-    //   end_op();
-    //   return -1;
-    // }
-    // ilock(ip);
-    
-    int depth = 0;
-    for ( ; ; ) {
-        if ((ip = namei(path)) == 0) {  // get inode
-            end_op();           
-            return -1;
-        }
-        ilock(ip);      // lock
-        if (ip->type == T_SYMLINK && (omode & O_NOFOLLOW) == 0) {    //T_SYMLINK and FOLLOW
-            // You may approximate this by returning an error code if the depth of links reaches some threshold (e.g., 10).
-            if (++depth > 10) {
-                iunlockput(ip);     // drop
-                end_op();
-                return -1;
-            }
-            if (readi(ip, 0, (uint64)path, 0, MAXPATH) < 0) {
-                iunlockput(ip);     //drop
-                end_op();
-                return -1;
-            }
-            iunlockput(ip);
-        } else {
-            // NO_FOLLOW OR NOT T_SYMLINK
-            break;
-        }
+    if((ip = namei(path)) == 0){
+      end_op();
+      return -1;
     }
-
-    //do.....
-    
+    ilock(ip);
     if(ip->type == T_DIR && omode != O_RDONLY){
       iunlockput(ip);
       end_op();

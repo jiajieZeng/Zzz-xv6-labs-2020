@@ -29,6 +29,55 @@ trapinithart(void)
   w_stvec((uint64)kernelvec);
 }
 
+//int 
+//lazyallocation(uint64 va)
+//{
+//    struct proc *p = myproc();
+//    struct vma *vma;
+//    struct file *fptr;
+//    struct inode *iptr;
+//    int found = 0;
+//    char *mem;
+//    for (int i = 0; i < NVMA; i++) {
+//        vma = &p->vmaslot[i];
+//        if (vma->mapped && va >= vma->begin && va < vma->begin + vma->length) {
+//            found = 1;
+//            break;
+//        }
+//    }
+//    if (found == 0) {
+//        return -1;
+//    }
+//    if ((mem = kalloc()) == 0) {
+//        return -1;
+//    }   
+//    memset(mem, 0, PGSIZE);
+//    
+//    //atomic
+//    begin_op();
+//    fptr = (struct file*)vma->f;
+//    iptr = (struct file*)fptr->ip;
+//    ilock(iptr);
+//    readi(iptr, 0, (uint64)mem, offset, PGSIZE);
+//    iunlock(iptr);
+//    end_op();
+//    uint64 pteflag = PTE_U;
+//    if (vma->prot & PROT_READ) {
+//        pteflag |= PTE_R;        
+//    }
+//    if (vma->prot & PROT_WRITE) {
+//        pteflag |= PTE_W;
+//    }
+//    if (vma->prot & PROT_EXEC) {
+//        pteflag |= PTE_X;
+//    }
+//    if (mappages(p->pagetable, PGROUNDDOWN(va), PGSIZE, (uint64)mem, pteflag) != 0) {
+//        kfree(mem);
+//        return -1;
+//    }
+//    return 0;
+//}
+
 //
 // handle an interrupt, exception, or system call from user space.
 // called from trampoline.S
@@ -68,9 +117,20 @@ usertrap(void)
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {
-    printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
-    printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
-    p->killed = 1;
+    uint64 va = r_stval();
+    uint64 nowscause = r_scause();
+    if (nowscause == 13 || nowscause == 15) {
+        // lazy allocation
+        if (lazyallocation(va) == -1) {
+            printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+            printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+            p->killed = 1;
+        }
+    } else {
+        printf("usertrap(): unexpected scause %p pid=%d\n", r_scause(), p->pid);
+        printf("            sepc=%p stval=%p\n", r_sepc(), r_stval());
+        p->killed = 1;
+    }
   }
 
   if(p->killed)
