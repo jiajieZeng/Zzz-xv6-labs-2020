@@ -1,0 +1,73 @@
+diff --git a/answers-thread.txt b/answers-thread.txt
+new file mode 100644
+index 0000000..8ad97b6
+--- /dev/null
++++ b/answers-thread.txt
+@@ -0,0 +1 @@
++当一个线程正在put一个k,v到一个bucket时，另一个线程同时也想要put到这个bucket。那么，由于在本机是multicores的，当这两个线程同时到达的时候，可能会导致丢失其中的一个k,v。
+diff --git a/kernel/e1000.c b/kernel/e1000.c
+index 70a2adf..da4ca09 100644
+--- a/kernel/e1000.c
++++ b/kernel/e1000.c
+@@ -102,7 +102,24 @@ e1000_transmit(struct mbuf *m)
+   // the TX descriptor ring so that the e1000 sends it. Stash
+   // a pointer so that it can be freed after sending.
+   //
++  acquire(&e1000_lock);
++  uint32 idx = regs[E1000_TDT];
++  if ((tx_ring[idx].status & E1000_TXD_STAT_DD) == 0) {
++    release(&e1000_lock);
++    return -1;
++  }
+   
++  if (tx_mbufs[idx] != 0) {
++    mbuffree(tx_mbufs[idx]);
++    tx_mbufs[idx] = 0;
++  }
++
++  tx_ring[idx].addr = (uint64)m->head;
++  tx_ring[idx].length = m->len;
++  tx_mbufs[idx] = m;
++  tx_ring[idx].cmd = E1000_TXD_CMD_RS | E1000_TXD_CMD_EOP;
++  regs[E1000_TDT] = (idx + 1) % TX_RING_SIZE;
++  release(&e1000_lock);
+   return 0;
+ }
+ 
+@@ -115,6 +132,18 @@ e1000_recv(void)
+   // Check for packets that have arrived from the e1000
+   // Create and deliver an mbuf for each packet (using net_rx()).
+   //
++  for ( ; ; ) {
++    uint32 idx = (regs[E1000_RDT] + 1) % RX_RING_SIZE;
++    if ((rx_ring[idx].status & E1000_RXD_STAT_DD) == 0) {
++        break;
++    }
++    rx_mbufs[idx]->len = rx_ring[idx].length;
++    net_rx(rx_mbufs[idx]);
++    rx_mbufs[idx] = mbufalloc(0);
++    rx_ring[idx].addr = (uint64)rx_mbufs[idx]->head;
++    rx_ring[idx].status = 0;
++    regs[E1000_RDT] = idx;
++  }
+ }
+ 
+ void
+@@ -124,6 +153,6 @@ e1000_intr(void)
+   // without this the e1000 won't raise any
+   // further interrupts.
+   regs[E1000_ICR] = 0xffffffff;
+-
++  
+   e1000_recv();
+ }
+diff --git a/packets.pcap b/packets.pcap
+index 82d353e..fa7af89 100644
+Binary files a/packets.pcap and b/packets.pcap differ
+diff --git a/time.txt b/time.txt
+new file mode 100644
+index 0000000..7ed6ff8
+--- /dev/null
++++ b/time.txt
+@@ -0,0 +1 @@
++5
